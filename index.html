@@ -2,100 +2,151 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Viewport tag configured to prevent unintended mobile zoom -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Age & Emotion Estimator</title>
     
     <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
 
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
+            padding: 16px;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
-            background-color: #1a1a1a;
+            min-height: 100vh;
+            background-color: #121212;
             color: #ffffff;
-            font-family: sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
+
+        h2 {
+            margin: 0 0 16px 0;
+            color: #4CAF50;
+            font-size: clamp(1.2rem, 5vw, 1.8rem);
+            text-align: center;
+        }
+
+        /* Container scales fluidly up to 540px width on desktop */
         #container {
             position: relative;
-            width: 720px;
-            height: 560px;
+            width: 100%;
+            max-width: 540px;
             background-color: #000;
-            border-radius: 12px;
+            border-radius: 16px;
             overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        video, canvas {
+
+        /* Video fills container width while keeping camera aspect ratio */
+        video {
+            width: 100%;
+            height: auto;
+            display: block;
+            object-fit: cover;
+        }
+
+        /* Canvas overlays exactly on top of the video */
+        canvas {
             position: absolute;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
         }
+
         #status {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 1.2rem;
+            font-size: 0.95rem;
             z-index: 10;
             text-align: center;
-            background: rgba(0,0,0,0.7);
-            padding: 20px;
+            background: rgba(0, 0, 0, 0.75);
+            padding: 16px 20px;
             border-radius: 8px;
+            width: 80%;
+            backdrop-filter: blur(4px);
         }
     </style>
 </head>
 <body>
 
-    <h2 style="color: #4CAF50;">Live Age & Emotion Estimator</h2>
+    <h2>Live Age & Emotion Estimator</h2>
     
     <div id="container">
         <div id="status">Waiting for page to load...</div>
-        <video id="video" width="720" height="560" autoplay muted playsinline></video>
+        <video id="video" autoplay muted playsinline></video>
     </div>
 
     <script>
         window.onload = async () => {
             const video = document.getElementById('video');
             const statusText = document.getElementById('status');
-            
             const MODEL_URL = 'https://vladmandic.github.io/face-api/model/';
 
             try {
-                statusText.innerHTML = "Downloading AI Models...<br><small>(Loading Age, Gender, and Emotion networks)</small>";
+                statusText.innerHTML = "Downloading AI Models...<br><small>(First load takes a few seconds)</small>";
                 
-                // 1. Load the new Expression model alongside the others
                 await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
                 await faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL);
-                await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL); 
+                await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
                 
-                statusText.innerHTML = "Models Loaded! Requesting camera permission...";
+                statusText.innerHTML = "Requesting camera access...";
                 
-                const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+                // Request front selfie camera specifically
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    } 
+                });
                 video.srcObject = stream;
 
             } catch (error) {
                 console.error(error);
-                statusText.innerHTML = `<span style="color:#ff4444; font-weight:bold;">Error: ${error.message}</span>`;
+                statusText.innerHTML = `<span style="color:#ff5252; font-weight:bold;">Error: ${error.message}</span>`;
             }
 
-            video.addEventListener('play', () => {
+            video.addEventListener('playing', () => {
                 statusText.style.display = 'none';
 
-                const canvas = faceapi.createCanvasFromMedia(video);
-                document.getElementById('container').append(canvas);
-                
-                const displaySize = { width: video.width, height: video.height };
-                faceapi.matchDimensions(canvas, displaySize);
+                // Ensure canvas exists only once
+                let canvas = document.querySelector('canvas');
+                if (!canvas) {
+                    canvas = faceapi.createCanvasFromMedia(video);
+                    document.getElementById('container').append(canvas);
+                }
+
+                // Match canvas to the actual rendered screen size of the video element
+                const updateDisplaySize = () => {
+                    const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
+                    faceapi.matchDimensions(canvas, displaySize);
+                    return displaySize;
+                };
+
+                let displaySize = updateDisplaySize();
+
+                // Recalculate dimensions if the user rotates their phone
+                window.addEventListener('resize', () => {
+                    displaySize = updateDisplaySize();
+                });
 
                 setInterval(async () => {
-                    // 2. Add .withFaceExpressions() to the detection chain
+                    if (video.paused || video.ended) return;
+
                     const detections = await faceapi.detectAllFaces(
                         video, 
-                        new faceapi.TinyFaceDetectorOptions()
+                        new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
                     ).withAgeAndGender().withFaceExpressions();
 
                     const resizedDetections = faceapi.resizeResults(detections, displaySize);
@@ -105,17 +156,19 @@
                     
                     resizedDetections.forEach(detection => {
                         const box = detection.detection.box;
-                        
-                        // 3. Find the emotion with the highest probability score
                         const expressions = detection.expressions;
-                        const highestExpression = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
+                        const highestExpression = Object.keys(expressions).reduce((a, b) => 
+                            expressions[a] > expressions[b] ? a : b
+                        );
                         
-                        // Capitalize the first letter of the emotion
                         const emotionFormat = highestExpression.charAt(0).toUpperCase() + highestExpression.slice(1);
-                        
-                        // Combine Age and Emotion into one label
                         const text = `${Math.round(detection.age)} yrs | ${emotionFormat}`;
-                        const drawBox = new faceapi.draw.DrawBox(box, { label: text });
+                        
+                        const drawBox = new faceapi.draw.DrawBox(box, { 
+                            label: text,
+                            boxColor: '#4CAF50',
+                            drawLabelOptions: { fontSize: 14, fontColor: '#ffffff' }
+                        });
                         drawBox.draw(canvas);
                     });
                 }, 100);
