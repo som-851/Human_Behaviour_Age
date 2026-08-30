@@ -2,17 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <!-- Viewport tag configured to prevent unintended mobile zoom -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Age & Emotion Estimator</title>
     
     <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
 
     <style>
-        * {
-            box-sizing: border-box;
-        }
-
+        * { box-sizing: border-box; }
         body {
             margin: 0;
             padding: 16px;
@@ -23,17 +19,13 @@
             min-height: 100vh;
             background-color: #121212;
             color: #ffffff;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: system-ui, sans-serif;
         }
-
         h2 {
             margin: 0 0 16px 0;
             color: #4CAF50;
             font-size: clamp(1.2rem, 5vw, 1.8rem);
-            text-align: center;
         }
-
-        /* Container scales fluidly up to 540px width on desktop */
         #container {
             position: relative;
             width: 100%;
@@ -46,22 +38,17 @@
             align-items: center;
             justify-content: center;
         }
-
-        /* Video fills container width while keeping camera aspect ratio */
         video {
             width: 100%;
             height: auto;
             display: block;
             object-fit: cover;
         }
-
-        /* Canvas overlays exactly on top of the video */
         canvas {
             position: absolute;
             top: 0;
             left: 0;
         }
-
         #status {
             position: absolute;
             top: 50%;
@@ -93,22 +80,18 @@
             const statusText = document.getElementById('status');
             const MODEL_URL = 'https://vladmandic.github.io/face-api/model/';
 
+            // Array to store recent age calculations for smoothing
+            let ageHistory = [];
+
             try {
-                statusText.innerHTML = "Downloading AI Models...<br><small>(First load takes a few seconds)</small>";
-                
+                statusText.innerHTML = "Downloading AI Models...";
                 await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
                 await faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL);
                 await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
                 
                 statusText.innerHTML = "Requesting camera access...";
-                
-                // Request front selfie camera specifically
                 const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { 
-                        facingMode: 'user',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    } 
+                    video: { facingMode: 'user' } 
                 });
                 video.srcObject = stream;
 
@@ -120,14 +103,12 @@
             video.addEventListener('playing', () => {
                 statusText.style.display = 'none';
 
-                // Ensure canvas exists only once
                 let canvas = document.querySelector('canvas');
                 if (!canvas) {
                     canvas = faceapi.createCanvasFromMedia(video);
                     document.getElementById('container').append(canvas);
                 }
 
-                // Match canvas to the actual rendered screen size of the video element
                 const updateDisplaySize = () => {
                     const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
                     faceapi.matchDimensions(canvas, displaySize);
@@ -135,42 +116,48 @@
                 };
 
                 let displaySize = updateDisplaySize();
-
-                // Recalculate dimensions if the user rotates their phone
-                window.addEventListener('resize', () => {
-                    displaySize = updateDisplaySize();
-                });
+                window.addEventListener('resize', () => { displaySize = updateDisplaySize(); });
 
                 setInterval(async () => {
                     if (video.paused || video.ended) return;
 
-                    const detections = await faceapi.detectAllFaces(
+                    // OPTIMIZATION 1: detectSingleFace instead of detectAllFaces
+                    // OPTIMIZATION 2: Increased scoreThreshold to 0.65 to ignore background noise
+                    const detection = await faceapi.detectSingleFace(
                         video, 
-                        new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
+                        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.65 })
                     ).withAgeAndGender().withFaceExpressions();
 
-                    const resizedDetections = faceapi.resizeResults(detections, displaySize);
-                    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-                    
-                    faceapi.draw.drawDetections(canvas, resizedDetections);
-                    
-                    resizedDetections.forEach(detection => {
-                        const box = detection.detection.box;
-                        const expressions = detection.expressions;
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                    if (detection) {
+                        const resizedDetection = faceapi.resizeResults(detection, displaySize);
+                        
+                        // OPTIMIZATION 3: Age smoothing (averages the last 15 frames)
+                        ageHistory.push(resizedDetection.age);
+                        if (ageHistory.length > 15) ageHistory.shift();
+                        const smoothedAge = Math.round(ageHistory.reduce((a, b) => a + b) / ageHistory.length);
+
+                        const expressions = resizedDetection.expressions;
                         const highestExpression = Object.keys(expressions).reduce((a, b) => 
                             expressions[a] > expressions[b] ? a : b
                         );
                         
                         const emotionFormat = highestExpression.charAt(0).toUpperCase() + highestExpression.slice(1);
-                        const text = `${Math.round(detection.age)} yrs | ${emotionFormat}`;
+                        const text = `${smoothedAge} yrs | ${emotionFormat}`;
                         
-                        const drawBox = new faceapi.draw.DrawBox(box, { 
+                        // OPTIMIZATION 4: Removed default drawDetections to stop duplicate blue boxes
+                        const drawBox = new faceapi.draw.DrawBox(resizedDetection.detection.box, { 
                             label: text,
                             boxColor: '#4CAF50',
-                            drawLabelOptions: { fontSize: 14, fontColor: '#ffffff' }
+                            drawLabelOptions: { fontSize: 16, fontColor: '#ffffff' }
                         });
                         drawBox.draw(canvas);
-                    });
+                    } else {
+                        // Clear age history if the face leaves the screen
+                        ageHistory = [];
+                    }
                 }, 100);
             });
         };
